@@ -376,7 +376,12 @@ impl TiDbEndPoint {
         let snap = SnapshotStore::new(self.snap.as_ref(), sel.get_start_ts());
         let mut ctx = try!(SelectContext::new(sel, snap, t.deadline, &mut t.statistics));
         let mut range = t.req.get_ranges().to_vec();
-        debug!("scanning range: {:?}", range);
+        let verbose = range[0].get_start().starts_with(br"t\200\000\000\000\000\000\001\377E");
+        if verbose {
+            info!("scanning range: {:?}", range);
+        } else {
+            debug!("scanning range: {:?}", range);
+        }
         if ctx.core.desc_scan {
             range.reverse();
         }
@@ -389,8 +394,17 @@ impl TiDbEndPoint {
         let mut resp = Response::new();
         let mut sel_resp = SelectResponse::new();
         match res {
-            Ok(()) => sel_resp.set_chunks(RepeatedField::from_vec(ctx.core.chunks)),
+            Ok(row_cnt) => {
+                sel_resp.set_chunks(RepeatedField::from_vec(ctx.core.chunks));
+                if verbose {
+                    let resp_size = sel_resp.compute_size();
+                    info!("scan {:?} get {} rows with chunk size {}", ctx.core.sel, row_cnt, resp_size);
+                }
+            },
             Err(e) => {
+                if verbose {
+                    error!("scan {:?} fail: {:?}", ctx.core.sel, e);
+                }
                 if let Error::Other(_) = e {
                     // should we handle locked here too?
                     sel_resp.set_error(to_pb_error(&e));
@@ -881,12 +895,13 @@ impl SelectContextCore {
         Ok(())
     }
 
-    fn collect_topn_rows(&mut self) -> Result<()> {
+    fn collect_topn_rows(&mut self) -> Result<usize> {
         let sorted_data = try!(self.topn_heap.take().unwrap().into_sorted_vec());
+        let row_cnt = sorted_data.len();
         for row in sorted_data {
             try!(self.get_row(row.handle, row.data));
         }
-        Ok(())
+        Ok(row_cnt)
     }
 
     /// Convert aggregate partial result to rows.
@@ -895,11 +910,12 @@ impl SelectContextCore {
     /// Aggs: count(c1), sum(c2), avg(c3)
     /// Rows: groupKey1, count1, value2, count3, value3
     ///       groupKey2, count1, value2, count3, value3
-    fn aggr_rows(&mut self) -> Result<()> {
+    fn aggr_rows(&mut self) -> Result<usize> {
         self.chunks = Vec::with_capacity((self.gk_aggrs.len() + BATCH_ROW_COUNT - 1) /
                                          BATCH_ROW_COUNT);
         // Each aggregate partial result will be converted to two datum.
         let mut row_data = Vec::with_capacity(1 + 2 * self.sel.get_aggregates().len());
+        let row_cnt = self.gks.len();
         for gk in self.gks.drain(..) {
             let aggrs = self.gk_aggrs.remove(&gk).unwrap();
 
@@ -916,7 +932,7 @@ impl SelectContextCore {
             chunk.mut_rows_meta().push(meta);
             row_data.clear();
         }
-        Ok(())
+        Ok(row_cnt)
     }
 }
 
@@ -964,7 +980,7 @@ impl<'a> SelectContext<'a> {
         })
     }
 
-    fn get_rows_from_sel(&mut self, ranges: Vec<KeyRange>) -> Result<()> {
+    fn get_rows_from_sel(&mut self, ranges: Vec<KeyRange>) -> Result<usize> {
         let mut collected = 0;
         for ran in ranges {
             if collected >= self.core.limit {
@@ -983,7 +999,7 @@ impl<'a> SelectContext<'a> {
         } else if self.core.aggr {
             self.core.aggr_rows()
         } else {
-            Ok(())
+            Ok(collected)
         }
     }
 
@@ -1063,7 +1079,7 @@ impl<'a> SelectContext<'a> {
         Ok(row_count)
     }
 
-    fn get_rows_from_idx(&mut self, ranges: Vec<KeyRange>) -> Result<()> {
+    fn get_rows_from_idx(&mut self, ranges: Vec<KeyRange>) -> Result<usize> {
         let mut collected = 0;
         for r in ranges {
             if collected >= self.core.limit {
@@ -1077,7 +1093,7 @@ impl<'a> SelectContext<'a> {
         } else if self.core.aggr {
             self.core.aggr_rows()
         } else {
-            Ok(())
+            Ok(collected)
         }
     }
 

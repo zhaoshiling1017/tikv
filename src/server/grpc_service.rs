@@ -119,7 +119,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -159,7 +159,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -212,7 +212,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -249,7 +249,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -294,7 +294,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -330,7 +330,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -367,7 +367,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -404,7 +404,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -444,7 +444,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -475,7 +475,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -510,7 +510,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -542,7 +542,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -576,7 +576,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
@@ -599,7 +599,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .and_then(|res| sink.success(res).map_err(Error::from))
             .map(|_| timer.observe_duration())
             .map_err(move |e| {
-                debug!("{} failed: {:?}", label, e);
+                warn!("{} failed: {:?}", label, e);
                 GRPC_MSG_FAIL_COUNTER.with_label_values(&[label]).inc();
             });
 
