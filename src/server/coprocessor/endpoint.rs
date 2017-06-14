@@ -16,14 +16,13 @@ use std::collections::BinaryHeap;
 use std::time::{Instant, Duration};
 use std::rc::Rc;
 use std::fmt::{self, Display, Formatter, Debug};
-use std::cmp::Ordering as CmpOrdering;
+use std::cmp::{self, Ordering as CmpOrdering};
 use std::cell::RefCell;
 use tipb::select::{self, SelectRequest, SelectResponse, Chunk, RowMeta};
 use tipb::schema::ColumnInfo;
 use tipb::expression::{Expr, ExprType, ByItem};
 use protobuf::{Message as PbMsg, RepeatedField};
 use byteorder::{BigEndian, ReadBytesExt};
-use kvproto::msgpb::{MessageType, Message};
 use kvproto::coprocessor::{Request, Response, KeyRange};
 use kvproto::errorpb::{self, ServerIsBusy};
 
@@ -341,10 +340,7 @@ fn check_if_outdated(deadline: Instant, tp: i64) -> Result<()> {
 
 fn respond(resp: Response, mut t: RequestTask) {
     t.stop_record_handling();
-    let mut resp_msg = Message::new();
-    resp_msg.set_msg_type(MessageType::CopResp);
-    resp_msg.set_cop_resp(resp);
-    (t.on_resp)(resp_msg)
+    (t.on_resp)(resp)
 }
 
 pub struct TiDbEndPoint {
@@ -483,7 +479,7 @@ fn inflate_with_col<'a, T>(eval: &mut Evaluator,
                         return Err(box_err!("column {} of {} is missing", col_id, h));
                     }
                     None => Datum::Null,
-                    Some(bs) => box_try!(bs.clone().decode_col_value(ctx, col)),
+                    Some(mut bs) => box_try!(bs.decode_col_value(ctx, col)),
                 };
                 e.insert(value);
             }
@@ -571,13 +567,16 @@ struct TopNHeap {
     err: Rc<RefCell<Option<String>>>,
 }
 
+const HEAP_MAX_CAPACITY: usize = 1024;
+
 impl TopNHeap {
     fn new(limit: usize) -> Result<TopNHeap> {
         if limit == usize::MAX {
             return Err(box_err!("invalid limit"));
         }
+        let cap = cmp::min(limit, HEAP_MAX_CAPACITY);
         Ok(TopNHeap {
-            rows: BinaryHeap::with_capacity(limit),
+            rows: BinaryHeap::with_capacity(cap),
             limit: limit,
             err: Rc::new(RefCell::new(None)),
         })
@@ -1015,7 +1014,7 @@ impl<'a> SelectContext<'a> {
             } else {
                 range.get_start().to_vec()
             };
-            let upper_bound = if !self.core.desc_scan && range.has_end() {
+            let upper_bound = if !self.core.desc_scan && !range.get_end().is_empty() {
                 Some(Key::from_raw(range.get_end()).encoded().clone())
             } else {
                 None
@@ -1089,7 +1088,7 @@ impl<'a> SelectContext<'a> {
         } else {
             r.get_start().to_vec()
         };
-        let upper_bound = if !self.core.desc_scan && r.has_end() {
+        let upper_bound = if !self.core.desc_scan && !r.get_end().is_empty() {
             Some(Key::from_raw(r.get_end()).encoded().clone())
         } else {
             None
@@ -1165,7 +1164,6 @@ mod tests {
     use storage::engine::{self, TEMP_DIR};
 
     use kvproto::coprocessor::Request;
-    use kvproto::msgpb::MessageType;
 
     use tipb::expression::{Expr, ExprType, ByItem};
 
@@ -1201,10 +1199,8 @@ mod tests {
         task.deadline -= Duration::from_secs(super::REQUEST_MAX_HANDLE_SECS);
         worker.schedule(Task::Request(task)).unwrap();
         let resp = rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert_eq!(resp.get_msg_type(), MessageType::CopResp);
-        let copr_resp = resp.get_cop_resp();
-        assert!(copr_resp.has_other_error());
-        assert_eq!(copr_resp.get_other_error(), super::OUTDATED_ERROR_MSG);
+        assert!(!resp.get_other_error().is_empty());
+        assert_eq!(resp.get_other_error(), super::OUTDATED_ERROR_MSG);
     }
 
     #[test]
@@ -1226,12 +1222,10 @@ mod tests {
         }
         for _ in 0..120 {
             let resp = rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            assert_eq!(resp.get_msg_type(), MessageType::CopResp);
-            let copr_resp = resp.get_cop_resp();
-            if !copr_resp.has_region_error() {
+            if !resp.has_region_error() {
                 continue;
             }
-            assert!(copr_resp.get_region_error().has_server_is_busy());
+            assert!(resp.get_region_error().has_server_is_busy());
             return;
         }
         panic!("suppose to get ServerIsBusy error.");
@@ -1372,5 +1366,13 @@ mod tests {
             assert_eq!(row.handle, handle);
             assert_eq!(row.key, exp_keys);
         }
+    }
+
+    #[test]
+    fn test_topn_limit_oom() {
+        let topn_heap = TopNHeap::new(usize::MAX - 1);
+        assert!(topn_heap.is_ok());
+        let topn_heap = TopNHeap::new(usize::MAX);
+        assert!(topn_heap.is_err());
     }
 }

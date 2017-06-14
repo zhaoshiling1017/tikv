@@ -74,8 +74,8 @@ impl Display for Task {
                 write!(f,
                        "Destroy {} [{}, {})",
                        region_id,
-                       escape(&start_key),
-                       escape(&end_key))
+                       escape(start_key),
+                       escape(end_key))
             }
         }
     }
@@ -133,13 +133,13 @@ impl Runner {
         let mut wb = WriteBatch::new();
         let mut size_cnt = 0;
         for cf in self.db.cf_names() {
-            try!(check_abort(&abort));
+            try!(check_abort(abort));
             let handle = box_try!(rocksdb::get_cf_handle(&self.db, cf));
 
             let iter_opt = IterOption::new(Some(end_key.to_vec()), false);
             let mut it = box_try!(self.db.new_iterator_cf(cf, iter_opt));
 
-            try!(check_abort(&abort));
+            try!(check_abort(abort));
             it.seek(start_key.into());
             while it.valid() {
                 {
@@ -158,7 +158,7 @@ impl Runner {
                         size_cnt = 0;
                     }
                 };
-                try!(check_abort(&abort));
+                try!(check_abort(abort));
                 if !it.next() {
                     break;
                 }
@@ -194,11 +194,11 @@ impl Runner {
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
         let snap_key = SnapKey::new(region_id, term, idx);
-        let mut s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
         self.mgr.register(snap_key.clone(), SnapEntry::Applying);
         defer!({
             self.mgr.deregister(&snap_key, &SnapEntry::Applying);
         });
+        let mut s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
         if !s.exists() {
             return Err(box_err!("missing snapshot file {}", s.path()));
         }
@@ -213,7 +213,6 @@ impl Runner {
         try!(s.apply(options));
         region_state.set_state(PeerState::Normal);
         box_try!(self.db.put_msg(&region_key, &region_state));
-        s.delete();
         info!("[region {}] apply new data takes {:?}",
               region_id,
               timer.elapsed());

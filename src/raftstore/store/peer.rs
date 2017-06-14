@@ -40,7 +40,7 @@ use raftstore::store::worker::apply::ExecResult;
 use util::worker::{FutureWorker as Worker, Scheduler};
 use raftstore::store::worker::{ApplyTask, ApplyRes, Apply};
 use util::{clocktime, Either, strftimespec};
-use util::collections::{HashMap, HashSet, HashMapValues as Values};
+use util::collections::{HashSet, FlatMap, FlatMapValues as Values};
 
 use pd::INVALID_ID;
 
@@ -192,14 +192,14 @@ pub struct PeerStat {
 pub struct Peer {
     engine: Arc<DB>,
     cfg: Rc<Config>,
-    peer_cache: Rc<RefCell<HashMap<u64, metapb::Peer>>>,
+    peer_cache: RefCell<FlatMap<u64, metapb::Peer>>,
     pub peer: metapb::Peer,
     region_id: u64,
     pub raft_group: RawNode<PeerStorage>,
     proposals: ProposalQueue,
     pending_reads: ReadIndexQueue,
     // Record the last instant of each peer's heartbeat response.
-    pub peer_heartbeats: HashMap<u64, Instant>,
+    pub peer_heartbeats: FlatMap<u64, Instant>,
     coprocessor_host: Arc<CoprocessorHost>,
     /// an inaccurate difference in region size since last reset.
     pub size_diff_hint: u64,
@@ -210,7 +210,8 @@ pub struct Peer {
 
     pub tag: String,
 
-    pub last_ready_idx: u64,
+    // Index of last scheduled committed raft log.
+    pub last_applying_idx: u64,
     pub last_compacted_idx: u64,
     // Approximate size of logs that is applied but not compacted yet.
     pub raft_log_size_hint: u64,
@@ -288,9 +289,10 @@ impl Peer {
 
         let store_id = store.store_id();
         let sched = store.snap_scheduler();
+        let peer_cache = FlatMap::default();
         let tag = format!("[region {}] {}", region.get_id(), peer_id);
 
-        let ps = try!(PeerStorage::new(store.engine(), &region, sched, tag.clone()));
+        let ps = try!(PeerStorage::new(store.engine(), region, sched, tag.clone()));
 
         let applied_index = ps.applied_index();
 
@@ -316,8 +318,8 @@ impl Peer {
             raft_group: raft_group,
             proposals: Default::default(),
             pending_reads: Default::default(),
-            peer_cache: store.peer_cache(),
-            peer_heartbeats: HashMap::default(),
+            peer_cache: RefCell::new(peer_cache),
+            peer_heartbeats: FlatMap::default(),
             coprocessor_host: store.coprocessor_host.clone(),
             size_diff_hint: 0,
             delete_keys_hint: 0,
@@ -326,7 +328,7 @@ impl Peer {
             marked_to_be_checked: false,
             leader_missing_time: Some(Instant::now()),
             tag: tag,
-            last_ready_idx: applied_index,
+            last_applying_idx: applied_index,
             last_compacted_idx: 0,
             consistency_state: ConsistencyState {
                 last_check_time: Instant::now(),
@@ -615,9 +617,13 @@ impl Peer {
 
     #[inline]
     pub fn ready_to_handle_pending_snap(&self) -> bool {
-        // If committed_index isn't equal to applied_index, written apply state may be overwritten
+        // If apply worker is still working, written apply state may be overwritten
         // by apply worker. So we have to wait here.
-        self.get_store().committed_index() == self.get_store().applied_index()
+        // Please note that committed_index can't be used here. When applying a snapshot,
+        // a stale heartbeat can make the leader think follower has already applied
+        // the snapshot, and send remaining log entries, which may increase committed_index.
+        // TODO: add more test
+        self.last_applying_idx == self.get_store().applied_index()
     }
 
     #[inline]
@@ -646,14 +652,14 @@ impl Peer {
         }
 
         if self.has_pending_snapshot() && !self.ready_to_handle_pending_snap() {
-            debug!("{} apply index {} != committed index {}, skip applying snapshot.",
+            debug!("{} [apply_idx: {}, last_applying_idx: {}] is not ready to apply snapshot.",
                    self.tag,
                    self.get_store().applied_index(),
-                   self.get_store().committed_index());
+                   self.last_applying_idx);
             return true;
         }
 
-        if !self.raft_group.has_ready_since(Some(self.last_ready_idx)) {
+        if !self.raft_group.has_ready_since(Some(self.last_applying_idx)) {
             return true;
         }
 
@@ -666,7 +672,7 @@ impl Peer {
 
         debug!("{} handle raft ready", self.tag);
 
-        let mut ready = self.raft_group.ready_since(self.last_ready_idx);
+        let mut ready = self.raft_group.ready_since(self.last_applying_idx);
 
         self.on_role_changed(&ready, worker);
 
@@ -744,7 +750,7 @@ impl Peer {
         // in `ready.committed_entries` again, which will lead to inconsistency.
         if self.is_applying_snapshot() {
             // Snapshot's metadata has been applied.
-            self.last_ready_idx = self.get_store().truncated_index();
+            self.last_applying_idx = self.get_store().truncated_index();
         } else {
             let committed_entries = ready.committed_entries.take().unwrap();
             // leader needs to update lease.
@@ -764,7 +770,7 @@ impl Peer {
                 }
             }
             if !committed_entries.is_empty() {
-                self.last_ready_idx = committed_entries.last().unwrap().get_index();
+                self.last_applying_idx = committed_entries.last().unwrap().get_index();
                 apply_tasks.push(Apply::new(self.region_id, self.term(), committed_entries));
             }
         }
@@ -775,7 +781,7 @@ impl Peer {
         if self.is_applying_snapshot() {
             // Because we only handle raft ready when not applying snapshot, so following
             // line won't be called twice for the same snapshot.
-            self.raft_group.advance_apply(self.last_ready_idx);
+            self.raft_group.advance_apply(self.last_applying_idx);
         }
     }
 
@@ -1026,7 +1032,7 @@ impl Peer {
             match r.get_cmd_type() {
                 CmdType::Get | CmdType::Snap => is_read = true,
                 CmdType::Delete | CmdType::Put => is_write = true,
-                CmdType::Invalid => {
+                CmdType::Prewrite | CmdType::Invalid => {
                     return Err(box_err!("invalid cmd type, message {:?} maybe currupted",
                                         req.get_header().get_uuid()));
                 }
@@ -1115,8 +1121,7 @@ impl Peer {
 
         match change_type {
             ConfChangeType::AddNode => {
-                let progress = Progress { ..Default::default() };
-                status.progress.insert(peer.get_id(), progress);
+                status.progress.insert(peer.get_id(), Progress::default());
             }
             ConfChangeType::RemoveNode => {
                 if status.progress.remove(&peer.get_id()).is_none() {
@@ -1248,7 +1253,7 @@ impl Peer {
         metrics.normal += 1;
 
         // TODO: validate request for unexpected changes.
-        try!(self.coprocessor_host.pre_propose(&self.region(), &mut req));
+        try!(self.coprocessor_host.pre_propose(self.region(), &mut req));
         let data = try!(req.write_to_bytes());
 
         // TODO: use local histogram metrics
@@ -1415,9 +1420,17 @@ pub fn check_epoch(region: &metapb::Region, req: &RaftCmdRequest) -> Result<()> 
 }
 
 impl Peer {
+    pub fn insert_peer_cache(&mut self, peer: metapb::Peer) {
+        self.peer_cache.borrow_mut().insert(peer.get_id(), peer);
+    }
+
+    pub fn remove_peer_from_cache(&mut self, peer_id: u64) {
+        self.peer_cache.borrow_mut().remove(&peer_id);
+    }
+
     pub fn get_peer_from_cache(&self, peer_id: u64) -> Option<metapb::Peer> {
-        if let Some(peer) = self.peer_cache.borrow().get(&peer_id).cloned() {
-            return Some(peer);
+        if let Some(peer) = self.peer_cache.borrow().get(&peer_id) {
+            return Some(peer.clone());
         }
 
         // Try to find in region, if found, set in cache.
@@ -1522,6 +1535,7 @@ impl Peer {
             let mut resp = match cmd_type {
                 CmdType::Get => try!(apply::do_get(&self.tag, self.region(), &snap, req)),
                 CmdType::Snap => try!(apply::do_snap(self.region().to_owned())),
+                CmdType::Prewrite => unreachable!(),
                 CmdType::Put | CmdType::Delete | CmdType::Invalid => unreachable!(),
             };
 

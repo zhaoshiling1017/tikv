@@ -886,7 +886,9 @@ impl ApplyDelegate {
                 CmdType::Put => self.handle_put(ctx, req),
                 CmdType::Delete => self.handle_delete(ctx, req),
                 CmdType::Snap => self.handle_snap(ctx, req),
-                CmdType::Invalid => Err(box_err!("invalid cmd type, message maybe currupted")),
+                CmdType::Prewrite | CmdType::Invalid => {
+                    Err(box_err!("invalid cmd type, message maybe currupted"))
+                }
             });
 
             resp.set_cmd_type(cmd_type);
@@ -1001,7 +1003,7 @@ fn check_data_key(key: &[u8], region: &Region) -> Result<()> {
 pub fn do_get(tag: &str, region: &Region, snap: &Snapshot, req: &Request) -> Result<Response> {
     // TODO: the get_get looks wried, maybe we should figure out a better name later.
     let key = req.get_get().get_key();
-    try!(check_data_key(key, &region));
+    try!(check_data_key(key, region));
 
     let mut resp = Response::new();
     let res = if req.get_get().has_cf() {
