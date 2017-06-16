@@ -24,7 +24,7 @@ use rocksdb::{DB, WriteBatch};
 use protobuf::{self, Message, MessageStatic};
 use uuid::Uuid;
 use kvproto::metapb;
-use kvproto::eraftpb::{self, ConfChangeType, MessageType};
+use kvproto::eraftpb::{self, ConfChange, ConfChangeType, EntryType, MessageType};
 use kvproto::raft_cmdpb::{RaftCmdRequest, RaftCmdResponse, CmdType, AdminCmdType, AdminResponse,
                           TransferLeaderRequest, TransferLeaderResponse};
 use kvproto::raft_serverpb::{RaftMessage, PeerState};
@@ -767,6 +767,22 @@ impl Peer {
                 self.raft_log_size_hint += entry.get_data().len() as u64;
                 if to_be_updated {
                     to_be_updated = !self.maybe_update_lease(entry.get_term(), entry.get_data());
+                }
+
+                // if apply entry has RemoveNode and remove peer itself, mark it as pending_remove.
+                // so that async append thread will not append new entries.
+                if entry.get_entry_type() == EntryType::EntryConfChange {
+                    let index = entry.get_index();
+                    let conf_change: ConfChange = parse_data_at(entry.get_data(), index, &self.tag);
+                    let cmd: RaftCmdRequest = parse_data_at(conf_change.get_context(), index, &self.tag);
+                    let admin_request = cmd.get_admin_request();
+                    if admin_request.get_cmd_type() == AdminCmdType::ChangePeer {
+                        let request = admin_request.get_change_peer();
+                        if request.get_change_type() == ConfChangeType::RemoveNode &&
+                           request.get_peer().get_id() == self.peer_id() {
+                            self.pending_remove = true;
+                        }
+                    }
                 }
             }
             if !committed_entries.is_empty() {
