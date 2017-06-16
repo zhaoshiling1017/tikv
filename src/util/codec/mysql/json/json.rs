@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::Result;
+use super::super::Result;
 use std::{str, f64};
 use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::BTreeMap;
@@ -734,7 +734,6 @@ mod test {
         ];
 
         for (left, right) in test_cases {
-            println!("left:{:?},right:{:?}", *left, *right);
             assert!(*left < *right);
         }
     }
