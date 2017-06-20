@@ -218,7 +218,7 @@ impl<T: Storage> RawNode<T> {
             self.raft.raft_log.stable_snap_to(rd.snapshot.get_metadata().get_index());
         }
         if !rd.read_states.is_empty() {
-            self.raft.read_states.clear();
+            self.raft.erase_old_ready_read(rd.read_states.len());
         }
     }
 
