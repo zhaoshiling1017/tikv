@@ -1159,7 +1159,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
                 } else {
                     new_peer.size_diff_hint = self.cfg.region_check_size_diff;
                 }
-                self.apply_workers[(region_id % APPLY_WORKER_NUM) as usize].schedule(ApplyTask::register(&new_peer)).unwrap();
+                self.apply_workers[(new_region_id % APPLY_WORKER_NUM) as usize].schedule(ApplyTask::register(&new_peer)).unwrap();
                 self.region_peers.insert(new_region_id, new_peer);
             }
         }
