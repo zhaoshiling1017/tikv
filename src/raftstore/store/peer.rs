@@ -321,7 +321,7 @@ impl Peer {
             coprocessor_host: store.coprocessor_host.clone(),
             size_diff_hint: 0,
             delete_keys_hint: 0,
-            apply_scheduler: store.apply_scheduler(),
+            apply_scheduler: store.apply_scheduler(region.get_id()),
             pending_remove: false,
             marked_to_be_checked: false,
             leader_missing_time: Some(Instant::now()),
@@ -442,7 +442,7 @@ impl Peer {
 
     fn add_ready_metric(&self, ready: &Ready, metrics: &mut RaftReadyMetrics) {
         metrics.message += ready.messages.len() as u64;
-        metrics.commit += ready.committed_entries.as_ref().map_or(0, |v| v.len() as u64);
+        //metrics.commit += ready.committed_entries.as_ref().map_or(0, |v| v.len() as u64);
         metrics.append += ready.entries.len() as u64;
 
         if !raft::is_empty_snap(&ready.snapshot) {
@@ -660,7 +660,7 @@ impl Peer {
 
         debug!("{} handle raft ready", self.tag);
 
-        let mut ready = self.raft_group.ready_since(self.last_applying_idx);
+        let mut ready = self.raft_group.get_ready();
 
         self.on_role_changed(&ready, worker);
 
@@ -715,7 +715,7 @@ impl Peer {
         apply_snap_result
     }
 
-    pub fn handle_raft_ready_apply(&mut self, mut ready: Ready, apply_tasks: &mut Vec<Apply>) {
+    pub fn handle_raft_ready_apply(&mut self, ready: Ready, apply_tasks: &mut Vec<Apply>) {
         // Call `handle_raft_committed_entries` directly here may lead to inconsistency.
         // In some cases, there will be some pending committed entries when applying a
         // snapshot. If we call `handle_raft_committed_entries` directly, these updates
@@ -727,9 +727,8 @@ impl Peer {
             // Snapshot's metadata has been applied.
             self.last_applying_idx = self.get_store().truncated_index();
         } else {
-            let committed_entries = ready.committed_entries.take().unwrap();
             // leader needs to update lease.
-            let mut to_be_updated = self.is_leader();
+            let to_be_updated = self.is_leader();
             if !to_be_updated {
                 // It's not leader anymore, we are safe to clear proposals. If it becomes leader
                 // again, the lease should be updated when election is finished, old proposals
@@ -737,16 +736,23 @@ impl Peer {
                 // callbacks are called.
                 self.proposals.clear();
             }
-            for entry in committed_entries.iter().rev() {
-                // raft meta is very small, can be ignored.
-                self.raft_log_size_hint += entry.get_data().len() as u64;
-                if to_be_updated {
-                    to_be_updated = !self.maybe_update_lease(entry.get_term(), entry.get_data());
-                }
-            }
-            if !committed_entries.is_empty() {
-                self.last_applying_idx = committed_entries.last().unwrap().get_index();
-                apply_tasks.push(Apply::new(self.region_id, self.term(), committed_entries));
+
+            // let committed_entries = ready.committed_entries.take().unwrap();
+            // for entry in committed_entries.iter().rev() {
+            //     // raft meta is very small, can be ignored.
+            //     self.raft_log_size_hint += entry.get_data().len() as u64;
+            //     if to_be_updated {
+            //         to_be_updated = !self.maybe_update_lease(entry.get_term(), entry.get_data());
+            //     }
+            // }
+            // if !committed_entries.is_empty() {
+            //     self.last_applying_idx = committed_entries.last().unwrap().get_index();
+            //     apply_tasks.push(Apply::new(self.region_id, self.term(), committed_entries));
+            // }
+
+            if ready.committed_idx > self.last_applying_idx {
+                self.last_applying_idx = ready.committed_idx;
+                apply_tasks.push(Apply::new(self.region_id, self.term(), ready.committed_idx));
             }
         }
 

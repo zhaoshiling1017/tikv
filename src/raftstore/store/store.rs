@@ -71,6 +71,7 @@ type Key = Vec<u8>;
 
 const MIO_TICK_RATIO: u64 = 10;
 const PENDING_VOTES_CAP: usize = 20;
+const APPLY_WORKER_NUM: u64 = 3;
 
 // A helper structure to bundle all channels for messages to `Store`.
 pub struct StoreChannel {
@@ -121,8 +122,8 @@ pub struct Store<T, C: 'static> {
     pd_worker: FutureWorker<PdTask>,
     consistency_check_worker: Worker<ConsistencyCheckTask>,
 
-    pub apply_worker: Worker<ApplyTask>,
-    apply_res_receiver: Option<StdReceiver<ApplyTaskRes>>,
+    pub apply_workers: Vec<Worker<ApplyTask>>,
+    apply_res_receivers: Vec<StdReceiver<ApplyTaskRes>>,
 
     trans: T,
     pd_client: Arc<C>,
@@ -188,6 +189,12 @@ impl<T, C> Store<T, C> {
         // TODO load coprocessors from configuration
         coprocessor_host.registry.register_observer(100, box SplitObserver);
 
+        let mut apply_workers = vec![];
+        for i in 0..APPLY_WORKER_NUM {
+            let name = format!("apply_worker_{}", i);
+            apply_workers.push(Worker::new(name));
+        }
+
         let mut s = Store {
             cfg: Rc::new(cfg),
             store: meta,
@@ -203,8 +210,8 @@ impl<T, C> Store<T, C> {
             compact_worker: Worker::new("compact worker"),
             pd_worker: FutureWorker::new("pd worker"),
             consistency_check_worker: Worker::new("consistency check worker"),
-            apply_worker: Worker::new("apply worker"),
-            apply_res_receiver: None,
+            apply_workers: apply_workers,
+            apply_res_receivers: vec![],
             region_ranges: BTreeMap::new(),
             pending_snapshot_regions: vec![],
             trans: trans,
@@ -319,8 +326,8 @@ impl<T, C> Store<T, C> {
         self.region_worker.scheduler()
     }
 
-    pub fn apply_scheduler(&self) -> Scheduler<ApplyTask> {
-        self.apply_worker.scheduler()
+    pub fn apply_scheduler(&self, region_id: u64) -> Scheduler<ApplyTask> {
+        self.apply_workers[(region_id % APPLY_WORKER_NUM) as usize].scheduler()
     }
 
     pub fn engine(&self) -> Arc<DB> {
@@ -426,10 +433,12 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         let consistency_check_runner = ConsistencyCheckRunner::new(self.sendch.clone());
         box_try!(self.consistency_check_worker.start(consistency_check_runner));
 
-        let (tx, rx) = mpsc::channel();
-        let apply_runner = ApplyRunner::new(self, tx);
-        self.apply_res_receiver = Some(rx);
-        box_try!(self.apply_worker.start(apply_runner));
+        for i in 0..APPLY_WORKER_NUM {
+            let (tx, rx) = mpsc::channel();
+            let apply_runner = ApplyRunner::new(self, tx);
+            self.apply_res_receivers.push(rx);
+            box_try!(self.apply_workers[i as usize].start(apply_runner));
+        }
 
         try!(event_loop.run(self));
         Ok(())
@@ -451,7 +460,9 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         handles.push(self.compact_worker.stop());
         handles.push(self.pd_worker.stop());
         handles.push(self.consistency_check_worker.stop());
-        handles.push(self.apply_worker.stop());
+        for worker in self.apply_workers.iter_mut() {
+            handles.push(worker.stop());
+        }
 
         for h in handles {
             if let Some(h) = h {
@@ -532,24 +543,26 @@ impl<T: Transport, C: PdClient> Store<T, C> {
     }
 
     fn poll_apply(&mut self) {
-        loop {
-            match self.apply_res_receiver.as_ref().unwrap().try_recv() {
-                Ok(ApplyTaskRes::Applys(multi_res)) => {
-                    for res in multi_res {
-                        if let Some(p) = self.region_peers.get_mut(&res.region_id) {
-                            debug!("{} async apply finish: {:?}", p.tag, res);
-                            p.post_apply(&res, &mut self.pending_raft_groups);
+        for i in 0..APPLY_WORKER_NUM {
+            loop {
+                match self.apply_res_receivers[i as usize].try_recv() {
+                    Ok(ApplyTaskRes::Applys(multi_res)) => {
+                        for res in multi_res {
+                            if let Some(p) = self.region_peers.get_mut(&res.region_id) {
+                                debug!("{} async apply finish: {:?}", p.tag, res);
+                                p.post_apply(&res, &mut self.pending_raft_groups);
+                            }
+                            self.store_stat.lock_cf_bytes_written += res.metrics.lock_cf_written_bytes;
+                            self.on_ready_result(res.region_id, res.exec_res);
                         }
-                        self.store_stat.lock_cf_bytes_written += res.metrics.lock_cf_written_bytes;
-                        self.on_ready_result(res.region_id, res.exec_res);
                     }
+                    Ok(ApplyTaskRes::Destroy(p)) => {
+                        let store_id = self.store_id();
+                        self.destroy_peer(p.region_id(), util::new_peer(store_id, p.id()));
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(e) => panic!("unexpected error {:?}", e),
                 }
-                Ok(ApplyTaskRes::Destroy(p)) => {
-                    let store_id = self.store_id();
-                    self.destroy_peer(p.region_id(), util::new_peer(store_id, p.id()));
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(e) => panic!("unexpected error {:?}", e),
             }
         }
     }
@@ -592,7 +605,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
                 info!("[region {}] asking destroying stale peer {:?}",
                       region_id,
                       p);
-                self.apply_worker.schedule(ApplyTask::destroy(region_id)).unwrap();
+                self.apply_workers[(region_id % APPLY_WORKER_NUM) as usize].schedule(ApplyTask::destroy(region_id)).unwrap();
                 return Ok(false);
             }
             info!("[region {}] destroying stale peer {:?}", region_id, p);
@@ -828,7 +841,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
 
         if need_remove {
             if async_remove {
-                self.apply_worker.schedule(ApplyTask::destroy(region_id)).unwrap();
+                self.apply_workers[(region_id % APPLY_WORKER_NUM) as usize].schedule(ApplyTask::destroy(region_id)).unwrap();
             } else {
                 self.destroy_peer(region_id, msg.get_to_peer().clone());
             }
@@ -935,17 +948,24 @@ impl<T: Transport, C: PdClient> Store<T, C> {
                   self.raft_metrics.ready.message - previous_ready_metrics.message,
                   self.raft_metrics.ready.snapshot - previous_ready_metrics.snapshot);
 
-        let mut apply_tasks = Vec::with_capacity(ready_results.len());
+        let mut apply_tasks = Vec::with_capacity(APPLY_WORKER_NUM as usize);
+        for _ in 0..APPLY_WORKER_NUM {
+            apply_tasks.push(vec![]);
+        }
         for (region_id, ready, res) in ready_results {
             self.region_peers
                 .get_mut(&region_id)
                 .unwrap()
-                .handle_raft_ready_apply(ready, &mut apply_tasks);
+                .handle_raft_ready_apply(ready, &mut apply_tasks[(region_id % APPLY_WORKER_NUM) as usize]);
             if let Some(apply_result) = res {
                 self.on_ready_apply_snapshot(apply_result);
             }
         }
-        self.apply_worker.schedule(ApplyTask::applies(apply_tasks)).unwrap();
+        for (i, task) in apply_tasks.into_iter().enumerate() {
+            if !task.is_empty() {
+                self.apply_workers[i].schedule(ApplyTask::applies(task)).unwrap();
+            }
+        }
 
         let dur = t.elapsed();
         if !self.is_busy {
@@ -1139,7 +1159,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
                 } else {
                     new_peer.size_diff_hint = self.cfg.region_check_size_diff;
                 }
-                self.apply_worker.schedule(ApplyTask::register(&new_peer)).unwrap();
+                self.apply_workers[(region_id % APPLY_WORKER_NUM) as usize].schedule(ApplyTask::register(&new_peer)).unwrap();
                 self.region_peers.insert(new_region_id, new_peer);
             }
         }

@@ -214,6 +214,10 @@ impl<T: Storage> RaftLog<T> {
         self.committed = to_commit;
     }
 
+    pub fn get_committed(&self) -> u64 {
+        self.committed
+    }
+
     pub fn applied_to(&mut self, idx: u64) {
         if idx == 0 {
             return;

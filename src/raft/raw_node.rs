@@ -101,10 +101,7 @@ pub struct Ready {
     // Snapshot specifies the snapshot to be saved to stable storage.
     pub snapshot: Snapshot,
 
-    // CommittedEntries specifies entries to be committed to a
-    // store/state-machine. These have previously been committed to stable
-    // store.
-    pub committed_entries: Option<Vec<Entry>>,
+    pub committed_idx: u64,
 
     // Messages specifies outbound messages to be sent AFTER Entries are
     // committed to stable storage.
@@ -116,19 +113,14 @@ pub struct Ready {
 impl Ready {
     fn new<T: Storage>(raft: &mut Raft<T>,
                        prev_ss: &SoftState,
-                       prev_hs: &HardState,
-                       since_idx: Option<u64>)
+                       prev_hs: &HardState)
                        -> Ready {
         let mut rd = Ready {
             entries: raft.raft_log.unstable_entries().unwrap_or(&[]).to_vec(),
             messages: raft.msgs.drain(..).collect(),
             ..Default::default()
         };
-        rd.committed_entries = Some((match since_idx {
-                None => raft.raft_log.next_entries(),
-                Some(idx) => raft.raft_log.next_entries_since(idx),
-            })
-            .unwrap_or_else(Vec::new));
+        rd.committed_idx = raft.raft_log.get_committed();
         let ss = raft.soft_state();
         if &ss != prev_ss {
             rd.ss = Some(ss);
@@ -293,16 +285,15 @@ impl<T: Storage> RawNode<T> {
         Err(Error::StepPeerNotFound)
     }
 
-    pub fn ready_since(&mut self, applied_idx: u64) -> Ready {
+    pub fn get_ready(&mut self) -> Ready {
         Ready::new(&mut self.raft,
                    &self.prev_ss,
-                   &self.prev_hs,
-                   Some(applied_idx))
+                   &self.prev_hs)
     }
 
     // Ready returns the current point-in-time state of this RawNode.
     pub fn ready(&mut self) -> Ready {
-        Ready::new(&mut self.raft, &self.prev_ss, &self.prev_hs, None)
+        Ready::new(&mut self.raft, &self.prev_ss, &self.prev_hs)
     }
 
     pub fn has_ready_since(&self, applied_idx: Option<u64>) -> bool {

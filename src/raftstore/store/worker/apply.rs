@@ -20,6 +20,7 @@ use std::collections::VecDeque;
 use rocksdb::{DB, WriteBatch, Writable};
 use uuid::Uuid;
 use protobuf::RepeatedField;
+use protobuf::Message;
 
 use kvproto::metapb::{Peer as PeerMeta, Region};
 use kvproto::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
@@ -28,7 +29,7 @@ use kvproto::raft_cmdpb::{RaftCmdRequest, RaftCmdResponse, ChangePeerRequest, Cm
                           AdminCmdType, Request, Response, AdminRequest, AdminResponse};
 
 use util::worker::Runnable;
-use util::{SlowTimer, rocksdb, escape};
+use util::{SlowTimer, NO_LIMIT, rocksdb, escape};
 use util::collections::{HashMap, HashMapEntry as MapEntry};
 use storage::{CF_LOCK, CF_RAFT};
 use raftstore::{Result, Error};
@@ -36,12 +37,15 @@ use raftstore::coprocessor::CoprocessorHost;
 use raftstore::store::{Store, cmd_resp, keys, util};
 use raftstore::store::msg::Callback;
 use raftstore::store::engine::{Snapshot, Peekable, Mutable};
+use raftstore::store::engine::Iterable;
 use raftstore::store::peer_storage::{self, write_initial_state, write_peer_state, compact_raft_log};
 use raftstore::store::peer::{parse_data_at, check_epoch, Peer};
 use raftstore::store::metrics::*;
 
 const WRITE_BATCH_MAX_KEYS: usize = 128;
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
+
+const RAFT_LOG_MULTI_GET_CNT: u64 = 8;
 
 pub struct PendingCmd {
     pub uuid: Uuid,
@@ -279,10 +283,81 @@ impl ApplyDelegate {
         }
     }
 
+    fn entries(&self, low: u64, high: u64, max_size: u64) -> Vec<Entry> {
+        if low > high {
+            panic!("low > high");
+        }
+        let mut ents = Vec::with_capacity((high - low) as usize);
+        if low == high {
+            return ents;
+        }
+        let mut total_size: u64 = 0;
+        let mut next_index = low;
+        let mut exceeded_max_size = false;
+
+        if high - low <= RAFT_LOG_MULTI_GET_CNT {
+            // If election happens in inactive regions, they will just try
+            // to fetch one empty log.
+            let handle = self.engine.cf_handle(CF_RAFT).unwrap();
+            for i in low..high {
+                let key = keys::raft_log_key(self.region.get_id(), i);
+                let v = self.engine.get_cf(handle, &key).unwrap().unwrap();
+                let mut entry = Entry::new();
+                entry.merge_from_bytes(&v);
+                assert_eq!(entry.get_index(), i);
+                total_size += v.len() as u64;
+                if !ents.is_empty() && total_size > max_size {
+                    break;
+                }
+                ents.push(entry);
+            }
+            return ents;
+        }
+
+        let start_key = keys::raft_log_key(self.region.get_id(), low);
+        let end_key = keys::raft_log_key(self.region.get_id(), high);
+        self.engine.scan_cf(CF_RAFT,
+                            &start_key,
+                            &end_key,
+                            true, // fill_cache
+                            &mut |_, value| {
+            let mut entry = Entry::new();
+            entry.merge_from_bytes(value);
+
+            // May meet gap or has been compacted.
+            if entry.get_index() != next_index {
+                panic!("error get_index");
+            }
+            next_index += 1;
+
+            ents.push(entry);
+            Ok(true)
+        });
+
+        // If we get the correct number of entries, returns,
+        // or the total size almost exceeds max_size, returns.
+        if ents.len() == (high - low) as usize || exceeded_max_size {
+            return ents;
+        }
+
+        // Here means we don't fetch enough entries.
+        panic!("get raft_entry error");
+    }
+
+    fn slice(&self, low: u64, high: u64) -> Vec<Entry> {
+        if low == high {
+            return vec![];
+        }
+
+        self.entries(low, high, NO_LIMIT)
+    }
+
     fn handle_raft_committed_entries(&mut self,
                                      apply_ctx: &mut ApplyContext,
-                                     committed_entries: Vec<Entry>)
+                                     committed_idx: u64)
                                      -> Vec<ExecResult> {
+        let last_applied_idx = self.apply_state.get_applied_index();
+        let committed_entries = self.slice(last_applied_idx + 1, committed_idx + 1);
         if committed_entries.is_empty() {
             return vec![];
         }
@@ -1071,15 +1146,15 @@ impl ApplyDelegate {
 pub struct Apply {
     region_id: u64,
     term: u64,
-    entries: Vec<Entry>,
+    committed_idx: u64,
 }
 
 impl Apply {
-    pub fn new(region_id: u64, term: u64, entries: Vec<Entry>) -> Apply {
+    pub fn new(region_id: u64, term: u64, idx: u64) -> Apply {
         Apply {
             region_id: region_id,
             term: term,
-            entries: entries,
+            committed_idx: idx,
         }
     }
 }
@@ -1225,9 +1300,6 @@ impl Runner {
         let mut applys_res = Vec::with_capacity(applys.len());
         let mut apply_ctx = ApplyContext::new(self.host.as_ref());
         for apply in applys {
-            if apply.entries.is_empty() {
-                continue;
-            }
             let mut e = match self.delegates.entry(apply.region_id) {
                 MapEntry::Vacant(_) => {
                     error!("[region {}] is missing", apply.region_id);
@@ -1239,7 +1311,8 @@ impl Runner {
                 let delegate = e.get_mut();
                 delegate.metrics = ApplyMetrics::default();
                 delegate.term = apply.term;
-                let results = delegate.handle_raft_committed_entries(&mut apply_ctx, apply.entries);
+                let results = delegate.handle_raft_committed_entries(&mut apply_ctx,
+                                                                     apply.committed_idx);
 
                 if delegate.pending_remove {
                     delegate.destroy();
