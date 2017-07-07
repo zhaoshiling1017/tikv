@@ -113,6 +113,10 @@ impl<'a> MvccTxn<'a> {
             if let Some((commit, _)) = try!(self.reader.seek_write(key, u64::max_value())) {
                 // Abort on writes after our start timestamp ...
                 if commit >= self.start_ts {
+                    info!("prewrite key {:?} start_ts {} meet write conflict with commit_ts {}",
+                          key,
+                          self.start_ts,
+                          commit);
                     return Err(Error::WriteConflict);
                 }
             }
