@@ -34,7 +34,7 @@ use util::xeval::{Evaluator, EvalContext};
 use util::{escape, duration_to_ms, duration_to_sec, Either};
 use util::worker::{BatchRunnable, Scheduler};
 use util::collections::{HashMap, HashMapEntry as Entry, HashSet};
-use util::threadpool::{ThreadPool, SmallGroupFirstQueue};
+use util::threadpool::SimpleThreadPool;
 use server::OnResponse;
 
 use super::{Error, Result};
@@ -69,7 +69,7 @@ pub struct Host {
     sched: Scheduler<Task>,
     reqs: HashMap<u64, Vec<RequestTask>>,
     last_req_id: u64,
-    pool: ThreadPool<SmallGroupFirstQueue<u64>, u64>,
+    pool: SimpleThreadPool,
     max_running_task_count: usize,
 }
 
@@ -80,14 +80,13 @@ impl Host {
                txn_concurrency_on_busy: usize,
                small_txn_tasks_limit: usize)
                -> Host {
-        let queue = SmallGroupFirstQueue::new(txn_concurrency_on_busy, small_txn_tasks_limit);
         Host {
             engine: engine,
             sched: scheduler,
             reqs: HashMap::default(),
             last_req_id: 0,
             max_running_task_count: DEFAULT_MAX_RUNNING_TASK_COUNT,
-            pool: ThreadPool::new(thd_name!("endpoint-pool"), concurrency, queue),
+            pool: SimpleThreadPool::new(thd_name!("endpoint-pool"), concurrency),
         }
     }
 }
@@ -247,7 +246,7 @@ impl BatchRunnable<Task> for Host {
                     for req in reqs {
                         let end_point = TiDbEndPoint::new(snap.clone());
                         let txn_id = req.start_ts.unwrap_or_default();
-                        self.pool.execute(txn_id, move || {
+                        self.pool.spawn(move || {
                             end_point.handle_request(req);
                             COPR_PENDING_REQS.with_label_values(&["select"]).sub(1.0);
                         });
@@ -272,9 +271,7 @@ impl BatchRunnable<Task> for Host {
     }
 
     fn shutdown(&mut self) {
-        if let Err(e) = self.pool.stop() {
-            warn!("Stop threadpool failed with {:?}", e);
-        }
+        self.pool.stop()
     }
 }
 
