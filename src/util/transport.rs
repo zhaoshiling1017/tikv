@@ -15,11 +15,12 @@
 use std::{thread, error, io};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use super::metrics::*;
 
 use mio;
+use crossbeam;
 
 const MAX_SEND_RETRY_CNT: usize = 5;
 
@@ -83,6 +84,13 @@ impl<T> Sender<T> for mpsc::SyncSender<T> {
             Err(mpsc::TrySendError::Disconnected(t)) => Err(NotifyError::Closed(Some(t))),
             Err(mpsc::TrySendError::Full(t)) => Err(NotifyError::Full(t)),
         }
+    }
+}
+
+impl<T> Sender<T> for Arc<crossbeam::sync::MsQueue<T>> {
+    fn send(&self, t: T) -> Result<(), NotifyError<T>> {
+        self.push(t);
+        Ok(())
     }
 }
 
@@ -151,6 +159,7 @@ impl<T, C: Sender<T>> Clone for RetryableSendCh<T, C> {
 
 pub type SendCh<T> = RetryableSendCh<T, mio::Sender<T>>;
 pub type SyncSendCh<T> = RetryableSendCh<T, mpsc::SyncSender<T>>;
+pub type QueueSendCh<T> = RetryableSendCh<T, Arc<crossbeam::sync::MsQueue<T>>>;
 
 #[cfg(test)]
 mod tests {

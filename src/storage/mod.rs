@@ -14,12 +14,14 @@
 use std::thread;
 use std::boxed::FnBox;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::sync::mpsc::{self, Receiver};
 use std::error;
 use std::sync::{Arc, Mutex};
 use std::io::Error as IoError;
+
+use crossbeam::sync::MsQueue;
 use kvproto::kvrpcpb::{LockInfo, CommandPri};
 use kvproto::errorpb;
+
 use self::metrics::*;
 
 pub mod engine;
@@ -322,7 +324,7 @@ impl Command {
     }
 }
 
-use util::transport::SyncSendCh;
+use util::transport::QueueSendCh;
 
 #[derive(Default)]
 pub struct Options {
@@ -343,19 +345,21 @@ impl Options {
 
 struct StorageHandle {
     handle: Option<thread::JoinHandle<()>>,
-    receiver: Option<Receiver<Msg>>,
+    receiver: Option<Arc<MsQueue<Msg>>>,
 }
 
 pub struct Storage {
     engine: Box<Engine>,
-    sendch: SyncSendCh<Msg>,
+    sendch: QueueSendCh<Msg>,
     handle: Arc<Mutex<StorageHandle>>,
 }
 
 impl Storage {
-    pub fn from_engine(engine: Box<Engine>, config: &Config) -> Result<Storage> {
-        let (tx, rx) = mpsc::sync_channel(config.sched_notify_capacity);
-        let sendch = SyncSendCh::new(tx, "kv-storage");
+    pub fn from_engine(engine: Box<Engine>, _: &Config) -> Result<Storage> {
+        // TODO: config.sched_notify_capacity
+        let queue =  Arc::new(MsQueue::new());
+        let (tx, rx) = (queue.clone(), queue);
+        let sendch = QueueSendCh::new(tx, "kv-storage");
 
         info!("storage {:?} started.", engine);
         Ok(Storage {

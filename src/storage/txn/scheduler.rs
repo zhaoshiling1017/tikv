@@ -33,20 +33,23 @@
 
 use std::boxed::Box;
 use std::fmt::{self, Formatter, Debug};
-use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
 
 use threadpool::ThreadPool;
 use prometheus::HistogramTimer;
 use kvproto::kvrpcpb::{Context, LockInfo, CommandPri};
+use crossbeam::sync::MsQueue;
+
+type Receiver<T> = Arc<MsQueue<T>>;
 
 use storage::{Engine, Command, Snapshot, StorageCb, Result as StorageResult,
               Error as StorageError, ScanMode, Statistics};
 use storage::mvcc::{MvccTxn, MvccReader, Error as MvccError, MAX_TXN_WRITE_SIZE};
 use storage::{Key, Value, KvPair, CMD_TAG_GC};
 use storage::engine::{CbContext, Result as EngineResult, Callback as EngineCallback, Modify};
-use util::transport::{SyncSendCh, Error as TransportError};
+use util::transport::{QueueSendCh, Error as TransportError};
 use util::SlowTimer;
 use util::collections::HashMap;
 
@@ -203,7 +206,7 @@ impl Drop for RunningCtx {
 }
 
 /// Creates a callback to receive async results of write prepare from the storage engine.
-fn make_engine_cb(cid: u64, pr: ProcessResult, ch: SyncSendCh<Msg>) -> EngineCallback<()> {
+fn make_engine_cb(cid: u64, pr: ProcessResult, ch: QueueSendCh<Msg>) -> EngineCallback<()> {
     Box::new(move |(cb_ctx, result)| {
         match ch.send(Msg::WriteFinished {
             cid: cid,
@@ -229,7 +232,7 @@ pub struct Scheduler {
     // cid -> context
     cmd_ctxs: HashMap<u64, RunningCtx>,
 
-    schedch: SyncSendCh<Msg>,
+    schedch: QueueSendCh<Msg>,
 
     // cmd id generator
     id_alloc: u64,
@@ -254,7 +257,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// Creates a scheduler.
     pub fn new(engine: Box<Engine>,
-               schedch: SyncSendCh<Msg>,
+               schedch: QueueSendCh<Msg>,
                concurrency: usize,
                worker_pool_size: usize,
                sched_too_busy_threshold: usize)
@@ -277,7 +280,7 @@ impl Scheduler {
 
 /// Processes a read command within a worker thread, then posts `ReadFinished` message back to the
 /// event loop.
-fn process_read(cid: u64, mut cmd: Command, ch: SyncSendCh<Msg>, snapshot: Box<Snapshot>) {
+fn process_read(cid: u64, mut cmd: Command, ch: QueueSendCh<Msg>, snapshot: Box<Snapshot>) {
     debug!("process read cmd(cid={}) in worker pool.", cid);
     SCHED_WORKER_COUNTER_VEC.with_label_values(&[cmd.tag(), "read"]).inc();
     let tag = cmd.tag();
@@ -455,7 +458,7 @@ fn process_read(cid: u64, mut cmd: Command, ch: SyncSendCh<Msg>, snapshot: Box<S
 
 /// Processes a write command within a worker thread, then posts either a `WritePrepareFinished`
 /// message if successful or a `WritePrepareFailed` message back to the event loop.
-fn process_write(cid: u64, cmd: Command, ch: SyncSendCh<Msg>, snapshot: Box<Snapshot>) {
+fn process_write(cid: u64, cmd: Command, ch: QueueSendCh<Msg>, snapshot: Box<Snapshot>) {
     SCHED_WORKER_COUNTER_VEC.with_label_values(&[cmd.tag(), "write"]).inc();
     if let Err(e) = process_write_impl(cid, cmd, ch.clone(), snapshot.as_ref()) {
         if let Err(err) = ch.send(Msg::WritePrepareFailed { cid: cid, err: e }) {
@@ -469,7 +472,7 @@ fn process_write(cid: u64, cmd: Command, ch: SyncSendCh<Msg>, snapshot: Box<Snap
 
 fn process_write_impl(cid: u64,
                       mut cmd: Command,
-                      ch: SyncSendCh<Msg>,
+                      ch: QueueSendCh<Msg>,
                       snapshot: &Snapshot)
                       -> Result<()> {
     let mut statistics = Statistics::default();
@@ -903,7 +906,7 @@ impl Scheduler {
 
     pub fn run(&mut self, receiver: Receiver<Msg>) -> Result<()> {
         loop {
-            let msg = box_try!(receiver.recv());
+            let msg = receiver.pop();
             match msg {
                 Msg::Quit => return Ok(()),
                 Msg::RawCmd { cmd, cb } => self.on_receive_new_cmd(cmd, cb),
