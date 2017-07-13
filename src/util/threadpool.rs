@@ -24,7 +24,52 @@ use std::fmt::{self, Write, Debug, Formatter};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use super::collections::HashMap;
 
+use crossbeam::sync::MsQueue;
+
 const DEFAULT_QUEUE_CAPACITY: usize = 1000;
+
+type Run = Box<FnBox() + Send>;
+
+fn poll(rx: Arc<MsQueue<Option<Run>>>, task_count: Arc<AtomicUsize>) {
+    while let Some(r) = rx.pop() {
+        r();
+        task_count.fetch_sub(1, AtomicOrdering::SeqCst);
+    }
+}
+
+pub struct SimpleThreadPool {
+    queue: Arc<MsQueue<Option<Run>>>,
+    task_count: Arc<AtomicUsize>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl SimpleThreadPool {
+    pub fn new<S: AsRef<str>>(name: S, concurrency: usize) -> SimpleThreadPool {
+        let queue = Arc::new(MsQueue::new());
+        let task_count = Arc::new(AtomicUsize::new(0));
+        let handles = (0..concurrency).map(|i| {
+            let rx = queue.clone();
+            let tc = task_count.clone();
+            Builder::new().name(format!("{}-{}", name.as_ref(), i)).spawn(move || poll(rx, tc)).unwrap()
+        }).collect();
+        SimpleThreadPool { queue, task_count, handles }
+    }
+    
+    pub fn stop(&self) {
+        for _ in 0..self.handles.len() {
+            self.queue.push(None);
+        }
+    }
+
+    pub fn get_task_count(&self) -> usize {
+        self.task_count.load(AtomicOrdering::SeqCst)
+    }
+
+    pub fn spawn<F: FnOnce() + Send + 'static>(&self, f: F) {
+        self.task_count.fetch_add(1, AtomicOrdering::SeqCst);
+        self.queue.push(Some(Box::new(f)));
+    }
+}
 
 pub struct Task<T> {
     // The task's id in the pool. Each task has a unique id,

@@ -37,7 +37,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
 
-use threadpool::ThreadPool;
 use prometheus::HistogramTimer;
 use kvproto::kvrpcpb::{Context, LockInfo, CommandPri};
 use crossbeam::sync::MsQueue;
@@ -51,6 +50,7 @@ use storage::{Key, Value, KvPair, CMD_TAG_GC};
 use storage::engine::{CbContext, Result as EngineResult, Callback as EngineCallback, Modify};
 use util::transport::{QueueSendCh, Error as TransportError};
 use util::SlowTimer;
+use util::threadpool::SimpleThreadPool;
 use util::collections::HashMap;
 
 use super::Result;
@@ -243,10 +243,10 @@ pub struct Scheduler {
     sched_too_busy_threshold: usize,
 
     // worker pool
-    worker_pool: ThreadPool,
+    worker_pool: SimpleThreadPool,
 
     // high priority commands will be delivered to this pool
-    high_priority_pool: ThreadPool,
+    high_priority_pool: SimpleThreadPool,
 
     has_gc_command: bool,
 
@@ -269,9 +269,8 @@ impl Scheduler {
             id_alloc: 0,
             latches: Latches::new(concurrency),
             sched_too_busy_threshold: sched_too_busy_threshold,
-            worker_pool: ThreadPool::new_with_name(thd_name!("sched-worker-pool"),
-                                                   worker_pool_size),
-            high_priority_pool: ThreadPool::new_with_name(thd_name!("sched-high-pri-pool"), 1),
+            worker_pool: SimpleThreadPool::new(thd_name!("sched-worker-pool"), worker_pool_size),
+            high_priority_pool: SimpleThreadPool::new(thd_name!("sched-high-pri-pool"), 1),
             has_gc_command: false,
             running_write_count: 0,
         }
@@ -665,7 +664,7 @@ impl Scheduler {
         ctx.tag
     }
 
-    fn fetch_worker_pool(&self, priority: CommandPri) -> &ThreadPool {
+    fn fetch_worker_pool(&self, priority: CommandPri) -> &SimpleThreadPool {
         match priority {
             CommandPri::Low | CommandPri::Normal => &self.worker_pool,
             CommandPri::High => &self.high_priority_pool,
@@ -688,9 +687,9 @@ impl Scheduler {
         let readcmd = cmd.readonly();
         let worker_pool = self.fetch_worker_pool(cmd.priority());
         if readcmd {
-            worker_pool.execute(move || process_read(cid, cmd, ch, snapshot));
+            worker_pool.spawn(move || process_read(cid, cmd, ch, snapshot));
         } else {
-            worker_pool.execute(move || process_write(cid, cmd, ch, snapshot));
+            worker_pool.spawn(move || process_write(cid, cmd, ch, snapshot));
         }
     }
 
