@@ -21,9 +21,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, Builder};
 use std::io;
 use std::fmt::{self, Formatter, Display, Debug};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender, Receiver, SendError};
 use std::error::Error;
+
+use crossbeam::sync::MsQueue;
 
 use util::SlowTimer;
 use self::metrics::*;
@@ -84,17 +86,19 @@ impl<T: Display, R: Runnable<T>> BatchRunnable<T> for R {
 pub struct Scheduler<T> {
     name: Arc<String>,
     counter: Arc<AtomicUsize>,
-    sender: Sender<Option<T>>,
+    stopped: Arc<AtomicBool>,
+    sender: Arc<MsQueue<Option<T>>>,
 }
 
 impl<T: Display> Scheduler<T> {
     fn new<S: Into<String>>(name: S,
                             counter: AtomicUsize,
-                            sender: Sender<Option<T>>)
+                            sender: Arc<MsQueue<Option<T>>>)
                             -> Scheduler<T> {
         Scheduler {
             name: Arc::new(name.into()),
             counter: Arc::new(counter),
+            stopped: Arc::new(AtomicBool::new(false)),
             sender: sender,
         }
     }
@@ -104,9 +108,10 @@ impl<T: Display> Scheduler<T> {
     /// If the worker is stopped, an error will return.
     pub fn schedule(&self, task: T) -> Result<(), Stopped<T>> {
         debug!("scheduling task {}", task);
-        if let Err(SendError(Some(t))) = self.sender.send(Some(task)) {
-            return Err(Stopped(t));
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(Stopped(task));
         }
+        self.sender.push(Some(task));
         self.counter.fetch_add(1, Ordering::SeqCst);
         PENDING_TASKS.with_label_values(&[&self.name]).inc();
         Ok(())
@@ -123,6 +128,7 @@ impl<T: Display> Clone for Scheduler<T> {
         Scheduler {
             name: self.name.clone(),
             counter: self.counter.clone(),
+            stopped: self.stopped.clone(),
             sender: self.sender.clone(),
         }
     }
@@ -133,18 +139,18 @@ impl<T: Display> Clone for Scheduler<T> {
 /// Useful for test purpose.
 #[cfg(test)]
 pub fn dummy_scheduler<T: Display>() -> Scheduler<T> {
-    let (tx, _) = mpsc::channel();
-    Scheduler::new("dummy scheduler", AtomicUsize::new(0), tx)
+    let queue = Arc::new(MsQueue::new());
+    Scheduler::new("dummy scheduler", AtomicUsize::new(0), queue)
 }
 
 /// A worker that can schedule time consuming tasks.
 pub struct Worker<T: Display> {
     scheduler: Scheduler<T>,
-    receiver: Mutex<Option<Receiver<Option<T>>>>,
+    receiver: Arc<MsQueue<Option<T>>>,
     handle: Option<JoinHandle<()>>,
 }
 
-fn poll<R, T>(mut runner: R, rx: Receiver<Option<T>>, counter: Arc<AtomicUsize>, batch_size: usize)
+fn poll<R, T>(mut runner: R, rx: Arc<MsQueue<Option<T>>>, counter: Arc<AtomicUsize>, batch_size: usize)
     where R: BatchRunnable<T> + Send + 'static,
           T: Display + Send + 'static
 {
@@ -152,18 +158,18 @@ fn poll<R, T>(mut runner: R, rx: Receiver<Option<T>>, counter: Arc<AtomicUsize>,
     let mut keep_going = true;
     let mut buffer = Vec::with_capacity(batch_size);
     while keep_going {
-        let t = rx.recv();
+        let t = rx.pop();
         match t {
-            Ok(Some(t)) => buffer.push(t),
+            Some(t) => buffer.push(t),
             _ => break,
         }
         while buffer.len() < batch_size {
-            match rx.try_recv() {
-                Ok(None) => {
+            match rx.try_pop() {
+                Some(None) => {
                     keep_going = false;
                     break;
                 }
-                Ok(Some(t)) => buffer.push(t),
+                Some(Some(t)) => buffer.push(t),
                 _ => break,
             }
         }
@@ -178,10 +184,10 @@ fn poll<R, T>(mut runner: R, rx: Receiver<Option<T>>, counter: Arc<AtomicUsize>,
 impl<T: Display + Send + 'static> Worker<T> {
     /// Create a worker.
     pub fn new<S: Into<String>>(name: S) -> Worker<T> {
-        let (tx, rx) = mpsc::channel();
+        let queue = Arc::new(MsQueue::new());
         Worker {
-            scheduler: Scheduler::new(name, AtomicUsize::new(0), tx),
-            receiver: Mutex::new(Some(rx)),
+            scheduler: Scheduler::new(name, AtomicUsize::new(0), queue.clone()),
+            receiver: queue,
             handle: None,
         }
     }
@@ -194,15 +200,14 @@ impl<T: Display + Send + 'static> Worker<T> {
     pub fn start_batch<R>(&mut self, runner: R, batch_size: usize) -> Result<(), io::Error>
         where R: BatchRunnable<T> + Send + 'static
     {
-        let mut receiver = self.receiver.lock().unwrap();
         info!("starting working thread: {}", self.scheduler.name);
-        if receiver.is_none() {
+        if self.handle.is_some() {
             warn!("worker {} has been started.", self.scheduler.name);
             return Ok(());
         }
 
-        let rx = receiver.take().unwrap();
         let counter = self.scheduler.counter.clone();
+        let rx = self.receiver.clone();
         let h = try!(Builder::new()
             .name(thd_name!(self.scheduler.name.as_ref()))
             .spawn(move || poll(runner, rx, counter, batch_size)));
@@ -238,9 +243,8 @@ impl<T: Display + Send + 'static> Worker<T> {
         if self.handle.is_none() {
             return None;
         }
-        if let Err(e) = self.scheduler.sender.send(None) {
-            warn!("failed to stop worker thread: {:?}", e);
-        }
+        self.scheduler.stopped.store(true, Ordering::SeqCst);
+        self.scheduler.sender.push(None);
         self.handle.take()
     }
 }
