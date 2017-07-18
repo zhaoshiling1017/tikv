@@ -40,6 +40,7 @@ extern crate tokio_core;
 #[cfg(test)]
 extern crate tempdir;
 extern crate grpc;
+extern crate time;
 
 mod signal_handler;
 mod profiling;
@@ -73,6 +74,7 @@ use tikv::raftstore::store::{self, SnapManager};
 use tikv::pd::{RpcClient, PdClient};
 use tikv::raftstore::store::keys::region_raft_prefix_len;
 use tikv::util::time_monitor::TimeMonitor;
+use time::Duration as TimeDuration;
 
 const KB: u64 = 1024;
 const MB: u64 = 1024 * KB;
@@ -241,7 +243,17 @@ fn cfg_duration(target: &mut Duration, config: &toml::Value, name: &str) {
             assert!(i >= 0);
             *target = Duration::from_millis(i as u64);
         }
-        None => info!("{} keep default {:?}", name, *target),
+        None => info!("{} keep default {:?}", name, target),
+    }
+}
+
+fn cfg_time_dur(target: &mut TimeDuration, config: &toml::Value, name: &str) {
+    match get_toml_int_opt(config, name) {
+        Some(i) => {
+            assert!(i >= 0);
+            *target = TimeDuration::milliseconds(i as i64);
+        }
+        None => info!("{} keep default {:?}", name, target),
     }
 }
 
@@ -719,6 +731,9 @@ fn build_cfg(matches: &ArgMatches,
         warn!("Election timeout ticks needs to be same across all the cluster, otherwise it may \
                lead to inconsistency.");
     }
+    cfg_time_dur(&mut cfg.raft_store.raft_store_max_leader_lease,
+                 config,
+                 "raftstore.raft-store-max-leader-lease");
     cfg_u64(&mut cfg.raft_store.split_region_check_tick_interval,
             config,
             "raftstore.split-region-check-tick-interval");
