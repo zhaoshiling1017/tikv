@@ -505,7 +505,7 @@ impl Evaluator {
             return Ok(Datum::Null);
         }
         let json = try!(child.cast_as_json());
-        let json_type = json.json_type().to_vec();
+        let json_type = json.json_type().as_bytes().to_vec();
         Ok(Datum::Bytes(json_type))
     }
 
@@ -1241,6 +1241,9 @@ pub mod test {
             (build_byte_datums_expr(&[br#"-3"#], ExprType::JsonType),
                         Datum::Bytes(b"INTEGER".to_vec())),
             (build_byte_datums_expr(&[br#"3"#], ExprType::JsonType),
+                        Datum::Bytes(b"INTEGER".to_vec())),
+            // i64::MAX + 1
+            (build_byte_datums_expr(&[br#"9223372036854775808"#], ExprType::JsonType),
                         Datum::Bytes(b"UNSIGNED INTEGER".to_vec())),
             (build_byte_datums_expr(&[br#"3.14"#], ExprType::JsonType),
                         Datum::Bytes(b"DOUBLE".to_vec())),

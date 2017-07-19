@@ -43,7 +43,8 @@ const ERR_CONVERT_FAILED: &str = "Can not covert from ";
 /// 2. Serialize `json` values into readable string representation, and reading
 /// values back from string representation.
 /// 3. sql functions like `JSON_TYPE`, etc
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum Json {
     Object(BTreeMap<String, Json>),
     Array(Vec<Json>),
@@ -52,6 +53,7 @@ pub enum Json {
     Double(f64),
     String(String),
     Boolean(bool),
+    #[serde(rename = "null")]
     None,
 }
 

@@ -11,12 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use serde::ser::{Serialize, Serializer, SerializeTuple, SerializeMap};
-use serde::de::{self, Deserialize, Deserializer, Visitor, SeqAccess, MapAccess};
 use serde_json;
-use std::collections::BTreeMap;
-use std::fmt;
-use std::{str, f64};
+use std::str;
 use std::str::FromStr;
 
 use coprocessor::codec::Error;
@@ -35,107 +31,6 @@ impl FromStr for Json {
             Ok(value) => Ok(value),
             Err(e) => Err(invalid_type!("Illegal Json text: {:?}", e)),
         }
-    }
-}
-
-impl Serialize for Json {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: Serializer
-    {
-        match *self {
-            Json::None => serializer.serialize_none(),
-            Json::Boolean(d) => serializer.serialize_bool(d),
-            Json::String(ref s) => serializer.serialize_str(s),
-            Json::Object(ref obj) => {
-                let mut map = try!(serializer.serialize_map(Some(obj.len())));
-                for (k, v) in obj {
-                    try!(map.serialize_entry(k, v));
-                }
-                map.end()
-            }
-            Json::Array(ref array) => {
-                let mut tup = try!(serializer.serialize_tuple(array.len()));
-                for item in array {
-                    try!(tup.serialize_element(item));
-                }
-                tup.end()
-            }
-            Json::Double(d) => serializer.serialize_f64(d),
-            Json::I64(d) => serializer.serialize_i64(d),
-            Json::U64(d) => serializer.serialize_u64(d),
-        }
-    }
-}
-
-struct JsonVisitor;
-impl<'de> Visitor<'de> for JsonVisitor {
-    type Value = Json;
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "a json value")
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::None)
-    }
-
-    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::Boolean(v))
-    }
-
-    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::I64(v))
-    }
-
-    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::U64(v))
-    }
-
-    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::Double(v))
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where E: de::Error
-    {
-        Ok(Json::String(String::from(v)))
-    }
-
-    fn visit_seq<M>(self, mut seq: M) -> Result<Self::Value, M::Error>
-        where M: SeqAccess<'de>
-    {
-        let mut seqs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(value) = seq.next_element()? {
-            seqs.push(value);
-        }
-        Ok(Json::Array(seqs))
-    }
-
-    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
-        where M: MapAccess<'de>
-    {
-        let mut map = BTreeMap::new();
-        while let Some((key, value)) = access.next_entry()? {
-            map.insert(key, value);
-        }
-        Ok(Json::Object(map))
-    }
-}
-
-impl<'de> Deserialize<'de> for Json {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where D: Deserializer<'de>
-    {
-        deserializer.deserialize_any(JsonVisitor)
     }
 }
 
