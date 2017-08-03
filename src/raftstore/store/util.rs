@@ -20,7 +20,7 @@ use raftstore::{Result, Error};
 use rocksdb::{DB, WriteBatch, Writable};
 use util::rocksdb;
 use super::engine::{IterOption, Iterable};
-use storage::CF_WRITE;
+use storage::{CF_WRITE, Key};
 
 use super::peer_storage;
 
@@ -98,23 +98,21 @@ pub fn delete_all_in_range(db: &DB, start_key: &[u8], end_key: &[u8]) -> Result<
         let iter_opt = IterOption::new(Some(end_key.to_vec()), false);
         let mut it = box_try!(db.new_iterator_cf(cf, iter_opt));
 
-        let handle = box_try!(rocksdb::get_cf_handle(db, cf));
-        box_try!(wb.delete_range_cf(handle, start_key, end_key));
-
-//        it.seek(start_key.into());
-//        if it.valid() {
-//            let handle = box_try!(rocksdb::get_cf_handle(db, cf));
-//            if cf == CF_WRITE {
-//                // We enable memtable prefix bloom for CF_WRITE, for delete_range operation
-//                // RocksDB will add start key to bloom, and the start key will go through
-//                // function prefix_extractor->Transform, in our case the prefix_extractor is
-//                // FixedSuffixSliceTransform, if the length of start key less than 8, we
-//                // will encounter index out of range error.
-//                box_try!(wb.delete_range_cf(handle, it.key(), end_key));
-//            } else {
-//                box_try!(wb.delete_range_cf(handle, start_key, end_key));
-//            }
-//        }
+        it.seek(start_key.into());
+        if it.valid() {
+            let handle = box_try!(rocksdb::get_cf_handle(db, cf));
+            if cf == CF_WRITE {
+                // We enable memtable prefix bloom for CF_WRITE, for delete_range operation
+                // RocksDB will add start key to bloom, and the start key will go through
+                // function prefix_extractor->Transform, in our case the prefix_extractor is
+                // FixedSuffixSliceTransform, if the length of start key less than 8, we
+                // will encounter index out of range error.
+                let start_key_with_ts = Key::from_encoded(start_key).append_ts(u64::MAX);
+                box_try!(wb.delete_range_cf(handle, start_key_with_ts.encoded(), end_key));
+            } else {
+                box_try!(wb.delete_range_cf(handle, start_key, end_key));
+            }
+        }
     }
 
     if wb.count() > 0 {
