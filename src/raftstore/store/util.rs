@@ -12,6 +12,7 @@
 // limitations under the License.
 
 use std::option::Option;
+use std::u64;
 
 use kvproto::metapb;
 use kvproto::eraftpb::{self, ConfChangeType, MessageType};
@@ -107,8 +108,8 @@ pub fn delete_all_in_range(db: &DB, start_key: &[u8], end_key: &[u8]) -> Result<
                 // function prefix_extractor->Transform, in our case the prefix_extractor is
                 // FixedSuffixSliceTransform, if the length of start key less than 8, we
                 // will encounter index out of range error.
-                let start_key_with_ts = Key::from_encoded(start_key).append_ts(u64::MAX);
-                box_try!(wb.delete_range_cf(handle, start_key_with_ts.encoded(), end_key));
+                let start_key_with_ts = Key::from_encoded(start_key.to_vec()).append_ts(u64::MAX);
+                box_try!(wb.delete_range_cf(handle, &start_key_with_ts.encoded(), end_key));
             } else {
                 box_try!(wb.delete_range_cf(handle, start_key, end_key));
             }
