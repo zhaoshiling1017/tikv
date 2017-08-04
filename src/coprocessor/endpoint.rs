@@ -191,6 +191,7 @@ impl RequestTask {
         self.wait_time = Some(wait_time);
     }
 
+    #[allow(dead_code)]
     fn stop_record_handling(&mut self) {
         self.stop_record_waiting();
 
@@ -390,8 +391,8 @@ fn check_if_outdated(deadline: Instant, tp: i64) -> Result<()> {
     Ok(())
 }
 
-fn respond(resp: Response, mut t: RequestTask) {
-    t.stop_record_handling();
+fn respond(resp: Response, t: RequestTask) {
+    // t.stop_record_handling();
     (t.on_resp)(resp)
 }
 
