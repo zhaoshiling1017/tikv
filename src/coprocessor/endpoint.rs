@@ -186,8 +186,8 @@ impl RequestTask {
             return;
         }
         let wait_time = duration_to_sec(self.timer.elapsed());
-        COPR_REQ_WAIT_TIME.with_label_values(&[get_req_type_str(self.req.get_tp())])
-            .observe(wait_time);
+        // COPR_REQ_WAIT_TIME.with_label_values(&[get_req_type_str(self.req.get_tp())])
+        //     .observe(wait_time);
         self.wait_time = Some(wait_time);
     }
 
@@ -196,14 +196,14 @@ impl RequestTask {
 
         let handle_time = duration_to_sec(self.timer.elapsed());
         let type_str = get_req_type_str(self.req.get_tp());
-        COPR_REQ_HISTOGRAM_VEC.with_label_values(&[type_str]).observe(handle_time);
+        // COPR_REQ_HISTOGRAM_VEC.with_label_values(&[type_str]).observe(handle_time);
         let wait_time = self.wait_time.unwrap();
-        COPR_REQ_HANDLE_TIME.with_label_values(&[type_str])
-            .observe(handle_time - wait_time);
+        // COPR_REQ_HANDLE_TIME.with_label_values(&[type_str])
+        //     .observe(handle_time - wait_time);
 
 
-        COPR_SCAN_KEYS.with_label_values(&[type_str])
-            .observe(self.statistics.total_op_count() as f64);
+        // COPR_SCAN_KEYS.with_label_values(&[type_str])
+            // .observe(self.statistics.total_op_count() as f64);
 
         // for (cf, details) in self.statistics.details() {
         //     for (tag, count) in details {
@@ -283,24 +283,24 @@ impl BatchRunnable<Task> for Host {
                         let pri = req.priority();
                         let pri_str = get_req_pri_str(pri);
                         let type_str = get_req_type_str(req.req.get_tp());
-                        COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).add(1.0);
+                        // COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).add(1.0);
                         let end_point = TiDbEndPoint::new(snap.clone());
                         let txn_id = req.start_ts.unwrap_or_default();
 
                         if pri == CommandPri::Low {
                             self.low_priority_pool.execute(txn_id, move || {
                                 end_point.handle_request(req);
-                                COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
+                                // COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
                             });
                         } else if pri == CommandPri::High {
                             self.high_priority_pool.execute(txn_id, move || {
                                 end_point.handle_request(req);
-                                COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
+                                // COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
                             });
                         } else {
                             self.pool.execute(txn_id, move || {
                                 end_point.handle_request(req);
-                                COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
+                                // COPR_PENDING_REQS.with_label_values(&[type_str, pri_str]).dec();
                             });
                         }
                     }
@@ -335,25 +335,25 @@ fn err_resp(e: Error) -> Response {
     match e {
         Error::Region(e) => {
             let tag = storage::get_tag_from_header(&e);
-            COPR_REQ_ERROR.with_label_values(&[tag]).inc();
+            // COPR_REQ_ERROR.with_label_values(&[tag]).inc();
             resp.set_region_error(e);
         }
         Error::Locked(info) => {
             resp.set_locked(info);
-            COPR_REQ_ERROR.with_label_values(&["lock"]).inc();
+            // COPR_REQ_ERROR.with_label_values(&["lock"]).inc();
         }
         Error::Outdated(deadline, now, tp) => {
             let t = get_req_type_str(tp);
             let elapsed = now.duration_since(deadline) +
                           Duration::from_secs(REQUEST_MAX_HANDLE_SECS);
-            COPR_REQ_ERROR.with_label_values(&["outdated"]).inc();
-            OUTDATED_REQ_WAIT_TIME.with_label_values(&[t])
-                .observe(elapsed.as_secs() as f64);
+            // COPR_REQ_ERROR.with_label_values(&["outdated"]).inc();
+            // OUTDATED_REQ_WAIT_TIME.with_label_values(&[t])
+                // .observe(elapsed.as_secs() as f64);
 
             resp.set_other_error(OUTDATED_ERROR_MSG.to_owned());
         }
         Error::Full(allow) => {
-            COPR_REQ_ERROR.with_label_values(&["full"]).inc();
+            // COPR_REQ_ERROR.with_label_values(&["full"]).inc();
             let mut errorpb = errorpb::Error::new();
             errorpb.set_message(format!("running batches reach limit {}", allow));
             let mut server_is_busy_err = ServerIsBusy::new();
@@ -363,7 +363,7 @@ fn err_resp(e: Error) -> Response {
         }
         Error::Other(_) => {
             resp.set_other_error(format!("{}", e));
-            COPR_REQ_ERROR.with_label_values(&["other"]).inc();
+            // COPR_REQ_ERROR.with_label_values(&["other"]).inc();
         }
     }
     resp
@@ -451,7 +451,7 @@ impl TiDbEndPoint {
                     sel_resp.set_error(to_pb_error(&e));
                     resp.set_data(box_try!(sel_resp.write_to_bytes()));
                     resp.set_other_error(format!("{}", e));
-                    COPR_REQ_ERROR.with_label_values(&["other"]).inc();
+                    // COPR_REQ_ERROR.with_label_values(&["other"]).inc();
                 } else {
                     return Err(e);
                 }
@@ -811,15 +811,15 @@ impl SelectContextCore {
         let mut aggr_cols = vec![];
         {
             let select_cols = if sel.has_table_info() {
-                COPR_EXECUTOR_COUNT.with_label_values(&["tblscan"]).inc();
+                // COPR_EXECUTOR_COUNT.with_label_values(&["tblscan"]).inc();
                 sel.get_table_info().get_columns()
             } else {
-                COPR_EXECUTOR_COUNT.with_label_values(&["idxscan"]).inc();
+                // COPR_EXECUTOR_COUNT.with_label_values(&["idxscan"]).inc();
                 sel.get_index_info().get_columns()
             };
             let mut cond_col_map = HashMap::default();
             if sel.has_field_where() {
-                COPR_EXECUTOR_COUNT.with_label_values(&["selection"]).inc();
+                // COPR_EXECUTOR_COUNT.with_label_values(&["selection"]).inc();
                 try!(collect_col_in_expr(&mut cond_col_map, select_cols, sel.get_field_where()));
             }
             let mut aggr_cols_map = HashMap::default();
@@ -847,7 +847,7 @@ impl SelectContextCore {
         }
 
         let limit = if sel.has_limit() {
-            COPR_EXECUTOR_COUNT.with_label_values(&["limit"]).inc();
+            // COPR_EXECUTOR_COUNT.with_label_values(&["limit"]).inc();
             sel.get_limit() as usize
         } else {
             usize::MAX
@@ -861,7 +861,7 @@ impl SelectContextCore {
             if !sel.get_order_by()[0].has_expr() {
                 desc_can = sel.get_order_by().first().map_or(false, |o| o.get_desc());
             } else {
-                COPR_EXECUTOR_COUNT.with_label_values(&["topn"]).inc();
+                // COPR_EXECUTOR_COUNT.with_label_values(&["topn"]).inc();
                 topn = true;
             }
         }
@@ -883,7 +883,7 @@ impl SelectContextCore {
         };
 
         let aggr = if !sel.get_aggregates().is_empty() || !sel.get_group_by().is_empty() {
-            COPR_EXECUTOR_COUNT.with_label_values(&["aggregation"]).inc();
+            // COPR_EXECUTOR_COUNT.with_label_values(&["aggregation"]).inc();
             true
         } else {
             false
@@ -1151,7 +1151,7 @@ impl<'a> SelectContext<'a> {
     fn get_rows_from_range(&mut self, range: KeyRange) -> Result<usize> {
         let mut row_count = 0;
         if is_point(&range) {
-            CORP_GET_OR_SCAN_COUNT.with_label_values(&["point"]).inc();
+            // CORP_GET_OR_SCAN_COUNT.with_label_values(&["point"]).inc();
             let value = match try!(self.snap
                 .get(&Key::from_raw(range.get_start()), &mut self.statistics)) {
                 None => return Ok(0),
@@ -1164,7 +1164,7 @@ impl<'a> SelectContext<'a> {
             let h = box_try!(table::decode_handle(range.get_start()));
             row_count += try!(self.core.handle_row(h, values));
         } else {
-            CORP_GET_OR_SCAN_COUNT.with_label_values(&["range"]).inc();
+            // CORP_GET_OR_SCAN_COUNT.with_label_values(&["range"]).inc();
             let mut seek_key = if self.core.desc_scan {
                 range.get_end().to_vec()
             } else {
@@ -1244,7 +1244,7 @@ impl<'a> SelectContext<'a> {
         } else {
             r.get_start().to_vec()
         };
-        CORP_GET_OR_SCAN_COUNT.with_label_values(&["range"]).inc();
+        // CORP_GET_OR_SCAN_COUNT.with_label_values(&["range"]).inc();
         let upper_bound = if !self.core.desc_scan && !r.get_end().is_empty() {
             Some(Key::from_raw(r.get_end()).encoded().clone())
         } else {
