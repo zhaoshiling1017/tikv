@@ -31,7 +31,7 @@ use kvproto::kvrpcpb::CommandPri;
 use util::{escape, duration_to_ms, duration_to_sec, Either};
 use util::worker::{BatchRunnable, Scheduler};
 use util::collections::{HashMap, HashMapEntry as Entry, HashSet};
-use util::threadpool::{ThreadPool, FifoQueue};
+use util::threadpool::{ThreadPool, FifoQueue, SmallGroupFirstQueue};
 use util::codec::number::NumberDecoder;
 use server::OnResponse;
 use storage::{self, Engine, SnapshotStore, engine, Snapshot, Key, ScanMode, Statistics};
@@ -78,7 +78,7 @@ pub struct Host {
     last_req_id: u64,
     pool: ThreadPool<FifoQueue<u64>, u64>,
     low_priority_pool: ThreadPool<FifoQueue<u64>, u64>,
-    high_priority_pool: ThreadPool<FifoQueue<u64>, u64>,
+    high_priority_pool: ThreadPool<SmallGroupFirstQueue<u64>, u64>,
     max_running_task_count: usize,
 }
 
@@ -98,7 +98,7 @@ impl Host {
                                                FifoQueue::new()),
             high_priority_pool: ThreadPool::new(thd_name!("endpoint-high-pool"),
                                                 concurrency,
-                                                FifoQueue::new()),
+                                                SmallGroupFirstQueue::new(1, 2)),
         }
     }
 
