@@ -29,7 +29,7 @@ use kvproto::raft_cmdpb::{RaftCmdRequest, RaftCmdResponse, ChangePeerRequest, Cm
 use util::worker::Runnable;
 use util::{SlowTimer, rocksdb, escape};
 use util::collections::{HashMap, HashMapEntry as MapEntry};
-use storage::{CF_LOCK, CF_RAFT};
+use storage::{CF_LOCK, CF_RAFT, CF_DEFAULT};
 use raftstore::{Result, Error};
 use raftstore::coprocessor::CoprocessorHost;
 use raftstore::store::{Store, cmd_resp, keys, util};
@@ -927,6 +927,9 @@ impl ApplyDelegate {
                            cf,
                            e)
                 });
+            if cf == CF_DEFAULT {
+                info!("{} put {}", self.tag, escape(&key));
+            }
         } else {
             ctx.wb.put(&key, value).unwrap_or_else(|e| {
                 panic!("{} failed to write ({}, {}): {:?}",
@@ -935,6 +938,7 @@ impl ApplyDelegate {
                        escape(value),
                        e);
             });
+            info!("{} put {}", self.tag, escape(&key));
         }
         Ok(resp)
     }
@@ -955,6 +959,9 @@ impl ApplyDelegate {
                 .unwrap_or_else(|e| {
                     panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
                 });
+            if cf == CF_DEFAULT {
+                info!("{} delete {}", self.tag, escape(&key));
+            }
 
             if cf == CF_LOCK {
                 // delete is a kind of write for RocksDB.
@@ -967,6 +974,7 @@ impl ApplyDelegate {
                 panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
             });
             self.metrics.delete_keys_hint += 1;
+            info!("{} delete {}", self.tag, escape(&key));
         }
 
         Ok(resp)

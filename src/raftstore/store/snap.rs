@@ -206,9 +206,10 @@ mod v1 {
     use crc::crc32::{self, Digest, Hasher32};
     use byteorder::{BigEndian, WriteBytesExt, ReadBytesExt};
     use rocksdb::{Writable, WriteBatch, CFHandle};
+    use storage::CF_DEFAULT;
     use kvproto::metapb::Region;
     use kvproto::raft_serverpb::RaftSnapshotData;
-    use util::{HandyRwLock, rocksdb, duration_to_sec};
+    use util::{HandyRwLock, rocksdb, duration_to_sec, escape};
     use util::codec::bytes::{BytesEncoder, CompactBytesDecoder};
     use raftstore::{Result as RaftStoreResult, Error as RaftStoreError};
 
@@ -249,7 +250,9 @@ mod v1 {
         Ok((cf_key_count, cf_size))
     }
 
-    pub fn apply_plain_cf_file<D: CompactBytesDecoder>(decoder: &mut D,
+    pub fn apply_plain_cf_file<D: CompactBytesDecoder>(region_id: u64,
+                                                       cf: &str,
+                                                       decoder: &mut D,
                                                        options: &ApplyOptions,
                                                        handle: &CFHandle)
                                                        -> Result<()> {
@@ -269,6 +272,9 @@ mod v1 {
             let value = box_try!(decoder.decode_compact_bytes());
             batch_size += value.len();
             box_try!(wb.put_cf(handle, &key, &value));
+            if cf == CF_DEFAULT {
+                info!("[region {}] put {}", region_id, escape(&key));
+            }
             if batch_size >= options.write_batch_size {
                 box_try!(options.db.write(wb));
                 wb = WriteBatch::new();
@@ -509,10 +515,11 @@ mod v1 {
                 if cf.is_empty() {
                     break;
                 }
-                let handle = box_try!(rocksdb::get_cf_handle(&options.db, unsafe {
+                let cf_str = unsafe {
                     str::from_utf8_unchecked(&cf)
-                }));
-                try!(apply_plain_cf_file(&mut reader, &options, handle));
+                };
+                let handle = box_try!(rocksdb::get_cf_handle(&options.db, cf_str));
+                try!(apply_plain_cf_file(self.key.region_id, cf_str, &mut reader, &options, handle));
             }
 
             box_try!(reader.validate());
@@ -1335,7 +1342,7 @@ mod v2 {
                 let cf_handle = box_try!(rocksdb::get_cf_handle(&options.db, cf_file.cf));
                 if plain_file_used(cf_file.cf) {
                     let mut file = box_try!(File::open(&cf_file.path));
-                    try!(apply_plain_cf_file(&mut file, &options, cf_handle));
+                    try!(apply_plain_cf_file(self.key.region_id, cf_file.cf, &mut file, &options, cf_handle));
                 } else {
                     let ingest_opt = IngestExternalFileOptions::new();
                     let path = cf_file.path.as_path().to_str().unwrap();
