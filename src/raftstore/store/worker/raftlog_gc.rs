@@ -72,27 +72,27 @@ impl Runner {
                    start_idx: u64,
                    end_idx: u64)
                    -> Result<u64, Error> {
-        let mut first_idx = start_idx;
-        if first_idx == 0 {
-            let start_key = keys::raft_log_key(region_id, 0);
-            first_idx = end_idx;
-            if let Some((k, _)) = box_try!(engine.seek_cf(CF_RAFT, &start_key)) {
-                first_idx = box_try!(keys::raft_log_index(&k));
-            }
-        }
-        if first_idx >= end_idx {
-            info!("[region {}] no need to gc", region_id);
-            return Ok(0);
-        }
-        let wb = WriteBatch::new();
-        let handle = box_try!(rocksdb::get_cf_handle(&engine, CF_RAFT));
-        for idx in first_idx..end_idx {
-            let key = keys::raft_log_key(region_id, idx);
-            box_try!(wb.delete_cf(handle, &key));
-        }
-        // TODO: disable WAL here.
-        engine.write(wb).unwrap();
-        Ok(end_idx - first_idx)
+//        let mut first_idx = start_idx;
+//        if first_idx == 0 {
+//            let start_key = keys::raft_log_key(region_id, 0);
+//            first_idx = end_idx;
+//            if let Some((k, _)) = box_try!(engine.seek_cf(CF_RAFT, &start_key)) {
+//                first_idx = box_try!(keys::raft_log_index(&k));
+//            }
+//        }
+//        if first_idx >= end_idx {
+//            info!("[region {}] no need to gc", region_id);
+//            return Ok(0);
+//        }
+//        let wb = WriteBatch::new();
+//        let handle = box_try!(rocksdb::get_cf_handle(&engine, CF_RAFT));
+//        for idx in first_idx..end_idx {
+//            let key = keys::raft_log_key(region_id, idx);
+//            box_try!(wb.delete_cf(handle, &key));
+//        }
+//        // TODO: disable WAL here.
+//        engine.write(wb).unwrap();
+        Ok(end_idx - start_idx)
     }
 
     fn report_collected(&self, collected: u64) {

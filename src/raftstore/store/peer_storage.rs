@@ -1018,9 +1018,9 @@ pub fn clear_meta(engine: &DB,
                             Ok(false)
                         }));
     let handle = try!(rocksdb::get_cf_handle(engine, CF_RAFT));
-    for id in first_index..last_index + 1 {
-        try!(wb.delete_cf(handle, &keys::raft_log_key(region_id, id)));
-    }
+//    for id in first_index..last_index + 1 {
+//        try!(wb.delete_cf(handle, &keys::raft_log_key(region_id, id)));
+//    }
     try!(wb.delete_cf(handle, &keys::raft_state_key(region_id)));
     try!(wb.delete_cf(handle, &keys::apply_state_key(region_id)));
 
