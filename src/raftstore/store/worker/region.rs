@@ -179,7 +179,7 @@ impl SnapContext {
         let region = region_state.get_region().clone();
         let start_key = keys::enc_start_key(&region);
         let end_key = keys::enc_end_key(&region);
-        box_try!(self.delete_all_in_range(&start_key, &end_key, &abort));
+        try!(self.delete_all_in_range(&start_key, &end_key, &abort));
 
         let state_key = keys::apply_state_key(region_id);
         let apply_state: RaftApplyState = match box_try!(self.db.get_msg_cf(CF_RAFT, &state_key)) {
