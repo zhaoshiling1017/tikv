@@ -1522,10 +1522,20 @@ impl<T: Transport, C: PdClient> Store<T, C> {
             if peer.size_diff_hint < self.cfg.region_check_size_diff {
                 continue;
             }
-            info!("{} region's size diff {} >= {}, need to check whether should split",
-                  peer.tag,
-                  peer.size_diff_hint,
-                  self.cfg.region_check_size_diff);
+
+            match peer.approximate_size() {
+                Ok(size) => {
+                    if size < self.cfg.region_max_size {
+                        continue;
+                    }
+                    info!("{} region's approximate size {} >= {}, need to do split check",
+                          peer.tag,
+                          size,
+                          self.cfg.region_max_size);
+                }
+                Err(e) => error!("{} get approximate size failed: {}", peer.tag, e),
+            }
+
             let task = SplitCheckTask::new(peer.region());
             if let Err(e) = self.split_check_worker.schedule(task) {
                 error!("{} failed to schedule split check: {}", self.tag, e);
